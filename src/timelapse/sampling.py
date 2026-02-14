@@ -27,14 +27,21 @@ def _sample_segment(
     t_end: datetime,
     n_candidates: int,
 ) -> list[SamplePlan]:
-    """Sample n_candidates frames evenly from a time segment."""
+    """Sample n_candidates frames evenly from a time segment.
+
+    When multiple slots map to the same video, extracts different frames
+    from it (spread across the full clip).
+    """
     seg_seconds = (t_end - t_start).total_seconds()
     if seg_seconds <= 0 or n_candidates <= 0:
         return []
 
     slot_duration = timedelta(seconds=seg_seconds / n_candidates)
+
     plan: list[SamplePlan] = []
-    last_video_path: Path | None = None
+
+    # Track how many times each video has been picked to vary frame position
+    video_hit_count: dict[Path, int] = {}
 
     for i in range(n_candidates):
         slot_center = t_start + slot_duration * (i + 0.5)
@@ -54,17 +61,21 @@ def _sample_segment(
         if best_video is None:
             continue
 
-        if best_delta > slot_duration * 2:
-            continue
+        # Vary frame position across the full video (0.1-0.9)
+        # so repeated picks of the same video yield different frames
+        hits = video_hit_count.get(best_video.path, 0)
+        video_hit_count[best_video.path] = hits + 1
 
-        if best_video.path == last_video_path:
-            continue
-
-        last_video_path = best_video.path
+        if hits == 0:
+            frame_fraction = 0.5
+        else:
+            # Spread frames evenly across usable range (0.1 to 0.9)
+            total_hits = hits + 1
+            frame_fraction = 0.1 + (0.8 * (hits / total_hits))
 
         plan.append(SamplePlan(
             video_path=best_video.path,
-            frame_fraction=0.5,
+            frame_fraction=frame_fraction,
             expected_timestamp=best_video.timestamp,
         ))
 

@@ -64,14 +64,22 @@ class TestCreateSamplePlan:
         plan = create_sample_plan(videos, config)
         assert len(plan) > 0
 
-    def test_deduplication_consecutive_slots(self):
-        """The same video shouldn't appear in consecutive sample entries."""
+    def test_repeated_video_gets_different_frames(self):
+        """When a video is picked for multiple slots, frame fractions should vary."""
         videos = _make_videos(5, datetime(2023, 1, 1), timedelta(days=1))
         config = Config(input_dir=Path("/v"), target_frames=100, oversample=1.0)
         plan = create_sample_plan(videos, config)
 
-        for i in range(1, len(plan)):
-            assert plan[i].video_path != plan[i - 1].video_path
+        # Group by video path
+        from collections import defaultdict
+        by_video: dict[Path, list[float]] = defaultdict(list)
+        for s in plan:
+            by_video[s.video_path].append(s.frame_fraction)
+
+        # Videos picked more than once should have varying frame fractions
+        for path, fractions in by_video.items():
+            if len(fractions) > 1:
+                assert len(set(fractions)) > 1, f"{path} has duplicate fractions"
 
     def test_intro_outro_produces_more_early_late_frames(self):
         """With intro/outro, early and late footage should have higher frame density."""

@@ -28,33 +28,14 @@ def _burn_timestamp(frame: np.ndarray, timestamp: datetime) -> np.ndarray:
     return frame
 
 
-def _downsample(frames: list[ExtractedFrame], target: int) -> list[ExtractedFrame]:
-    """Uniformly downsample to target count, preserving temporal order."""
-    if len(frames) <= target:
-        return frames
-    step = len(frames) / target
-    return [frames[int(i * step)] for i in range(target)]
-
-
 def compose_video(
     frames_iter: Iterator[ExtractedFrame],
     config: Config,
 ) -> Path:
-    """Assemble frames into an MP4 video via ffmpeg subprocess."""
-    # Collect frames (needed for potential downsampling)
-    log.info("Collecting accepted frames...")
-    frames = list(frames_iter)
+    """Assemble frames into an MP4 video via ffmpeg subprocess.
 
-    if not frames:
-        raise SystemExit("Error: No frames passed detection. Try lowering --confidence or using --skip-detection.")
-
-    log.info("Accepted %d frames", len(frames))
-
-    # Downsample if we have more than target
-    if len(frames) > config.target_frames:
-        frames = _downsample(frames, config.target_frames)
-        log.info("Downsampled to %d frames", len(frames))
-
+    Streams frames directly to ffmpeg — only one frame in memory at a time.
+    """
     output = config.output
     output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -74,7 +55,7 @@ def compose_video(
         str(output),
     ]
 
-    log.info("Encoding %d frames at %dfps to %s...", len(frames), config.fps, output)
+    log.info("Encoding to %s (streaming)...", output)
 
     proc = subprocess.Popen(
         ffmpeg_cmd,
@@ -83,15 +64,17 @@ def compose_video(
         stderr=subprocess.PIPE,
     )
 
+    frame_count = 0
     try:
-        for ef in frames:
+        for ef in frames_iter:
             frame = ef.image
             if config.timestamp_overlay:
                 frame = _burn_timestamp(frame.copy(), ef.timestamp)
             proc.stdin.write(frame.tobytes())
+            frame_count += 1
 
         proc.stdin.close()
-        _, stderr = proc.communicate(timeout=120)
+        _, stderr = proc.communicate(timeout=300)
 
         if proc.returncode != 0:
             log.error("ffmpeg error:\n%s", stderr.decode(errors="replace"))
@@ -102,11 +85,15 @@ def compose_video(
         log.error("ffmpeg pipe broken:\n%s", stderr.decode(errors="replace"))
         raise SystemExit("Error: ffmpeg encoding failed (broken pipe)")
 
+    if frame_count == 0:
+        output.unlink(missing_ok=True)
+        raise SystemExit("Error: No frames passed detection. Try lowering --confidence or using --skip-detection.")
+
     file_size = output.stat().st_size
-    duration = len(frames) / config.fps
+    duration = frame_count / config.fps
     log.info(
         "Output: %s (%.1f MB, %.1fs, %d frames)",
-        output, file_size / (1024 * 1024), duration, len(frames),
+        output, file_size / (1024 * 1024), duration, frame_count,
     )
 
     return output

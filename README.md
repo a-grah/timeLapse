@@ -78,9 +78,9 @@ timelapse --no-recursive /path/to/clips
 ## How it works
 
 1. **Discovery** — Recursively finds video files and extracts timestamps from filenames, directory structure, video metadata, or file modification time
-2. **Sampling** — Divides the full time range into equal slots and picks one video per slot, ensuring even temporal coverage regardless of how many clips exist per day
-3. **Detection** — Extracts a frame from each selected video and runs YOLOv8-nano person detection, filtering out frames with no people
-4. **Composition** — Pipes accepted frames to ffmpeg for H.264 encoding
+2. **Sampling** — Divides the full time range into equal slots and picks the nearest video for each slot, extracting multiple frames from the same clip when needed to hit the target duration
+3. **Detection** — Runs YOLOv8-nano person detection on each extracted frame, filtering out frames with no people (skip with `--skip-detection`)
+4. **Composition** — Streams accepted frames directly to ffmpeg for H.264 encoding (constant memory usage)
 
 The `--intro` and `--outro` options create a "linger" effect where the beginning and end of the time-lapse play 3x slower than the middle, letting you savor the earliest and latest moments.
 
