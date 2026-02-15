@@ -32,3 +32,23 @@ def has_person(frame: np.ndarray, confidence: float = 0.3) -> bool:
         imgsz=640,
     )
     return len(results[0].boxes) > 0
+
+
+def has_persons_batch(frames: list[np.ndarray], confidence: float = 0.3) -> list[bool]:
+    """Batch detect persons in multiple frames at once.
+
+    Significantly faster than calling has_person() per frame because
+    YOLO processes the entire batch in a single forward pass.
+    """
+    if not frames:
+        return []
+    model = _get_model()
+    results = model.predict(
+        frames,
+        conf=confidence,
+        classes=[0],
+        verbose=False,
+        imgsz=640,
+        batch=len(frames),
+    )
+    return [len(r.boxes) > 0 for r in results]

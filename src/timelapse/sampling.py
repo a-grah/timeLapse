@@ -13,11 +13,71 @@ log = logging.getLogger("timelapse")
 # This makes early/late footage feel like time is passing more slowly.
 LINGER_FACTOR = 3.0
 
+# Gap compression: gaps > median * multiplier are capped to reduce repetitive frames
+# from inactive periods (overnight, empty room, etc.)
+GAP_CAP_MULTIPLIER = 4.0
+MIN_GAP_CAP_SECONDS = 600.0  # 10 minutes — never compress gaps shorter than this
+MAX_PICKS_PER_VIDEO = 8      # safety cap on repeated picks of a single video
+
 
 class SamplePlan(NamedTuple):
     video_path: Path
     frame_fraction: float  # 0.0-1.0, where in the video to extract
     expected_timestamp: datetime
+
+
+def _build_compressed_timeline(
+    seg_videos: list[VideoFile],
+    t_start: datetime,
+    t_end: datetime,
+) -> tuple[list[float], float]:
+    """Build a compressed timeline where large inter-video gaps are capped.
+
+    Active periods (with many closely spaced clips) retain their full
+    duration, while inactive gaps (hours with no recordings) are compressed.
+
+    Returns:
+        compressed_positions: compressed-time position for each video
+        total_compressed: total duration in compressed time
+    """
+    if len(seg_videos) < 3:
+        # Too few videos to compute meaningful gap statistics; use real time.
+        positions = [
+            (v.timestamp - t_start).total_seconds() for v in seg_videos
+        ]
+        total = (t_end - t_start).total_seconds()
+        return positions, total
+
+    # Compute inter-video gaps
+    gaps = []
+    for i in range(len(seg_videos) - 1):
+        gap_secs = (seg_videos[i + 1].timestamp - seg_videos[i].timestamp).total_seconds()
+        gaps.append(gap_secs)
+
+    # Cap = max(median * multiplier, floor) — adaptive to recording cadence
+    sorted_gaps = sorted(gaps)
+    median_gap = sorted_gaps[len(sorted_gaps) // 2]
+    gap_cap = max(median_gap * GAP_CAP_MULTIPLIER, MIN_GAP_CAP_SECONDS)
+
+    log.debug(
+        "Gap compression: median=%.0fs, cap=%.0fs (%.1f min)",
+        median_gap, gap_cap, gap_cap / 60,
+    )
+
+    # Build compressed position for each video
+    leading_gap = max((seg_videos[0].timestamp - t_start).total_seconds(), 0)
+    compressed_positions = [min(leading_gap, gap_cap)]
+
+    for i in range(1, len(seg_videos)):
+        real_gap = max(
+            (seg_videos[i].timestamp - seg_videos[i - 1].timestamp).total_seconds(), 0,
+        )
+        compressed_positions.append(compressed_positions[-1] + min(real_gap, gap_cap))
+
+    trailing_gap = max((t_end - seg_videos[-1].timestamp).total_seconds(), 0)
+    total_compressed = compressed_positions[-1] + min(trailing_gap, gap_cap)
+
+    return compressed_positions, total_compressed
 
 
 def _sample_segment(
@@ -27,8 +87,10 @@ def _sample_segment(
     t_end: datetime,
     n_candidates: int,
 ) -> list[SamplePlan]:
-    """Sample n_candidates frames evenly from a time segment.
+    """Sample n_candidates frames from a time segment using gap-compressed timeline.
 
+    Large gaps between videos are compressed so that active periods (with many
+    clips) receive proportionally more frames than inactive gaps.
     When multiple slots map to the same video, extracts different frames
     from it (spread across the full clip).
     """
@@ -36,7 +98,34 @@ def _sample_segment(
     if seg_seconds <= 0 or n_candidates <= 0:
         return []
 
-    slot_duration = timedelta(seconds=seg_seconds / n_candidates)
+    # Find videos relevant to this segment.
+    # Use bisect_left for start (include videos at t_start) and
+    # bisect_right for end (include videos at t_end).
+    # Don't expand beyond boundaries — with multi-segment sampling
+    # (intro/mid/outro), boundary overlap causes ordering violations.
+    seg_start_idx = bisect.bisect_left(timestamps, t_start)
+    seg_end_idx = bisect.bisect_right(timestamps, t_end)
+
+    # If no videos fall within [t_start, t_end], include the nearest one
+    if seg_start_idx >= seg_end_idx:
+        nearest_idx = min(seg_start_idx, len(videos) - 1)
+        seg_start_idx = nearest_idx
+        seg_end_idx = nearest_idx + 1
+
+    seg_videos = videos[seg_start_idx:seg_end_idx]
+
+    if not seg_videos:
+        return []
+
+    # Build compressed timeline for gap-aware sampling
+    compressed_positions, total_compressed = _build_compressed_timeline(
+        seg_videos, t_start, t_end,
+    )
+
+    if total_compressed <= 0:
+        return []
+
+    slot_duration = total_compressed / n_candidates
 
     plan: list[SamplePlan] = []
 
@@ -44,32 +133,36 @@ def _sample_segment(
     video_hit_count: dict[Path, int] = {}
 
     for i in range(n_candidates):
-        slot_center = t_start + slot_duration * (i + 0.5)
+        slot_center = slot_duration * (i + 0.5)
 
-        idx = bisect.bisect_left(timestamps, slot_center)
+        # Find nearest video in compressed space
+        idx = bisect.bisect_left(compressed_positions, slot_center)
 
         best_video: VideoFile | None = None
-        best_delta = timedelta.max
+        best_delta = float("inf")
 
         for candidate_idx in (idx - 1, idx):
-            if 0 <= candidate_idx < len(videos):
-                delta = abs(videos[candidate_idx].timestamp - slot_center)
+            if 0 <= candidate_idx < len(seg_videos):
+                delta = abs(compressed_positions[candidate_idx] - slot_center)
                 if delta < best_delta:
                     best_delta = delta
-                    best_video = videos[candidate_idx]
+                    best_video = seg_videos[candidate_idx]
 
         if best_video is None:
             continue
 
-        # Vary frame position across the full video (0.1-0.9)
-        # so repeated picks of the same video yield different frames
+        # Per-video safety cap
         hits = video_hit_count.get(best_video.path, 0)
+        if hits >= MAX_PICKS_PER_VIDEO:
+            continue
+
         video_hit_count[best_video.path] = hits + 1
 
+        # Vary frame position across the video (0.1-0.9)
+        # so repeated picks of the same video yield different frames
         if hits == 0:
             frame_fraction = 0.5
         else:
-            # Spread frames evenly across usable range (0.1 to 0.9)
             total_hits = hits + 1
             frame_fraction = 0.1 + (0.8 * (hits / total_hits))
 

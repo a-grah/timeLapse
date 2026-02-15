@@ -3,7 +3,7 @@ from pathlib import Path
 
 from timelapse.config import Config
 from timelapse.discovery import VideoFile
-from timelapse.sampling import SamplePlan, create_sample_plan
+from timelapse.sampling import SamplePlan, create_sample_plan, MAX_PICKS_PER_VIDEO
 
 
 def _make_videos(count: int, start: datetime, interval: timedelta) -> list[VideoFile]:
@@ -118,3 +118,100 @@ class TestCreateSamplePlan:
         )
         plan = create_sample_plan(videos, config)
         assert len(plan) > 0
+
+
+class TestGapCompression:
+    def test_gap_compression_reduces_duplicates(self):
+        """Videos clustered with large gaps should not produce many duplicates."""
+        base = datetime(2023, 1, 1, 8, 0)
+        cluster1 = [
+            VideoFile(Path(f"/v/a_{i}.mp4"), base + timedelta(minutes=i * 6))
+            for i in range(10)
+        ]
+        cluster2 = [
+            VideoFile(Path(f"/v/b_{i}.mp4"), base + timedelta(hours=13, minutes=i * 6))
+            for i in range(10)
+        ]
+        videos = cluster1 + cluster2
+
+        config = Config(
+            input_dir=Path("/v"), target_frames=100,
+            oversample=1.0, skip_detection=True,
+        )
+        plan = create_sample_plan(videos, config)
+
+        # Most of the 20 videos should appear
+        unique_videos = len(set(s.video_path for s in plan))
+        assert unique_videos >= 15
+
+        # No single video should dominate the plan
+        from collections import Counter
+        counts = Counter(s.video_path for s in plan)
+        max_picks = max(counts.values())
+        assert max_picks <= MAX_PICKS_PER_VIDEO
+
+    def test_uniform_videos_unchanged(self):
+        """Uniformly spaced videos should still cover the full time range."""
+        videos = _make_videos(100, datetime(2023, 1, 1), timedelta(hours=1))
+        config = Config(
+            input_dir=Path("/v"), target_frames=50,
+            oversample=1.0, skip_detection=True,
+        )
+        plan = create_sample_plan(videos, config)
+
+        timestamps = [s.expected_timestamp for s in plan]
+        span = (timestamps[-1] - timestamps[0]).total_seconds()
+        total_span = (videos[-1].timestamp - videos[0].timestamp).total_seconds()
+        assert span / total_span > 0.8
+
+    def test_compressed_timeline_preserves_order(self):
+        """Compressed sampling must maintain chronological ordering."""
+        base = datetime(2023, 1, 1)
+        videos = []
+        for day in [0, 0, 0, 1, 1, 5, 5, 5, 5, 10, 10, 15]:
+            videos.append(VideoFile(
+                Path(f"/v/clip_{day}_{len(videos)}.mp4"),
+                base + timedelta(days=day, hours=len(videos)),
+            ))
+
+        config = Config(
+            input_dir=Path("/v"), target_frames=30,
+            oversample=1.0, skip_detection=True,
+        )
+        plan = create_sample_plan(videos, config)
+
+        timestamps = [s.expected_timestamp for s in plan]
+        assert timestamps == sorted(timestamps)
+
+    def test_few_videos_fallback(self):
+        """With fewer than 3 videos, should not crash and should produce output."""
+        videos = _make_videos(2, datetime(2023, 1, 1), timedelta(hours=5))
+        config = Config(
+            input_dir=Path("/v"), target_frames=10,
+            oversample=1.0, skip_detection=True,
+        )
+        plan = create_sample_plan(videos, config)
+        assert len(plan) > 0
+
+    def test_gap_compression_with_intro_outro(self):
+        """Gap compression should work correctly within intro/outro segments."""
+        base = datetime(2023, 1, 1)
+        cluster1 = [
+            VideoFile(Path(f"/v/a_{i}.mp4"), base + timedelta(minutes=i * 5))
+            for i in range(20)
+        ]
+        cluster2 = [
+            VideoFile(Path(f"/v/b_{i}.mp4"), base + timedelta(hours=11, minutes=i * 5))
+            for i in range(20)
+        ]
+        videos = cluster1 + cluster2
+
+        config = Config(
+            input_dir=Path("/v"), target_frames=3000, fps=30,
+            intro_seconds=15, outro_seconds=15,
+            oversample=1.0, skip_detection=True,
+        )
+        plan = create_sample_plan(videos, config)
+        assert len(plan) > 0
+        timestamps = [s.expected_timestamp for s in plan]
+        assert timestamps == sorted(timestamps)

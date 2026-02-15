@@ -163,6 +163,8 @@ def main(
     # Stage 3: Extract + Detect
     from timelapse.extraction import extract_frames
 
+    DETECTION_BATCH_SIZE = 16
+
     def _process_frames():
         if config.skip_detection:
             log.info("Skipping person detection (--skip-detection)")
@@ -171,18 +173,41 @@ def main(
                 total=len(plan), desc="Extracting frames", unit="frame",
             )
         else:
-            from timelapse.detection import has_person
+            from timelapse.detection import has_persons_batch
             accepted = 0
             rejected = 0
-            for ef in tqdm(
-                extract_frames(plan, config.width, config.height),
-                total=len(plan), desc="Extracting & detecting", unit="frame",
-            ):
-                if has_person(ef.image, config.confidence):
-                    accepted += 1
-                    yield ef
-                else:
-                    rejected += 1
+            batch: list = []
+            pbar = tqdm(total=len(plan), desc="Extracting & detecting", unit="frame")
+
+            for ef in extract_frames(plan, config.width, config.height):
+                batch.append(ef)
+                pbar.update(1)
+
+                if len(batch) >= DETECTION_BATCH_SIZE:
+                    results = has_persons_batch(
+                        [b.image for b in batch], config.confidence,
+                    )
+                    for ef_b, has in zip(batch, results):
+                        if has:
+                            accepted += 1
+                            yield ef_b
+                        else:
+                            rejected += 1
+                    batch.clear()
+
+            # Process remaining frames in final partial batch
+            if batch:
+                results = has_persons_batch(
+                    [b.image for b in batch], config.confidence,
+                )
+                for ef_b, has in zip(batch, results):
+                    if has:
+                        accepted += 1
+                        yield ef_b
+                    else:
+                        rejected += 1
+
+            pbar.close()
             log.info("Detection: %d accepted, %d rejected (%.0f%% pass rate)",
                      accepted, rejected,
                      100 * accepted / max(1, accepted + rejected))

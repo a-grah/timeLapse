@@ -17,52 +17,43 @@ class ExtractedFrame(NamedTuple):
     source: Path
 
 
-def extract_frame(
-    plan: SamplePlan,
-    target_width: int,
-    target_height: int,
-) -> ExtractedFrame | None:
-    """Extract a single frame from a video at the planned position."""
-    cap = cv2.VideoCapture(str(plan.video_path))
-    try:
+class _VideoHandle:
+    """Caches an open VideoCapture to avoid reopening the same file."""
+
+    def __init__(self):
+        self._path: Path | None = None
+        self._cap: cv2.VideoCapture | None = None
+        self._frame_count: int = 0
+
+    def get(self, path: Path) -> tuple[cv2.VideoCapture | None, int]:
+        """Get a VideoCapture for the given path, reusing if same as last call."""
+        if self._path == path and self._cap is not None:
+            return self._cap, self._frame_count
+
+        self.close()
+        cap = cv2.VideoCapture(str(path))
         if not cap.isOpened():
-            log.warning("Cannot open %s", plan.video_path.name)
-            return None
+            log.warning("Cannot open %s", path.name)
+            cap.release()
+            return None, 0
 
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if frame_count <= 0:
-            log.warning("No frames in %s", plan.video_path.name)
-            return None
+            log.warning("No frames in %s", path.name)
+            cap.release()
+            return None, 0
 
-        # Pick frame from middle third
-        mid_start = frame_count // 3
-        mid_end = (frame_count * 2) // 3
-        target_frame = max(0, (mid_start + mid_end) // 2)
-        target_frame = int(frame_count * plan.frame_fraction)
-        target_frame = max(0, min(target_frame, frame_count - 1))
+        self._path = path
+        self._cap = cap
+        self._frame_count = frame_count
+        return cap, frame_count
 
-        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-        ret, frame = cap.read()
-
-        if not ret or frame is None:
-            log.warning("Failed to read frame %d from %s", target_frame, plan.video_path.name)
-            return None
-
-        # Resize to target output resolution
-        if frame.shape[1] != target_width or frame.shape[0] != target_height:
-            frame = cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_AREA)
-
-        return ExtractedFrame(
-            image=frame,
-            timestamp=plan.expected_timestamp,
-            source=plan.video_path,
-        )
-
-    except Exception as e:
-        log.warning("Error extracting from %s: %s", plan.video_path.name, e)
-        return None
-    finally:
-        cap.release()
+    def close(self):
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+            self._path = None
+            self._frame_count = 0
 
 
 def extract_frames(
@@ -70,8 +61,34 @@ def extract_frames(
     target_width: int,
     target_height: int,
 ) -> Generator[ExtractedFrame, None, None]:
-    """Extract frames from videos according to the sample plan. Yields one at a time."""
-    for plan in plans:
-        frame = extract_frame(plan, target_width, target_height)
-        if frame is not None:
-            yield frame
+    """Extract frames from videos. Caches the video handle so consecutive
+    plans using the same video don't reopen the file.
+    """
+    handle = _VideoHandle()
+
+    try:
+        for plan in plans:
+            cap, frame_count = handle.get(plan.video_path)
+            if cap is None:
+                continue
+
+            target_frame = int(frame_count * plan.frame_fraction)
+            target_frame = max(0, min(target_frame, frame_count - 1))
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            ret, frame = cap.read()
+
+            if not ret or frame is None:
+                log.warning("Failed to read frame %d from %s", target_frame, plan.video_path.name)
+                continue
+
+            if frame.shape[1] != target_width or frame.shape[0] != target_height:
+                frame = cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_AREA)
+
+            yield ExtractedFrame(
+                image=frame,
+                timestamp=plan.expected_timestamp,
+                source=plan.video_path,
+            )
+    finally:
+        handle.close()
