@@ -138,11 +138,11 @@ Measured on 60 synthetic 1280×720 clips with `--skip-detection` (no person dete
 
 | Stage | Python | Go |
 |---|---|---|
-| Discovery + sampling (`--dry-run`) | 0.24s | 0.22s |
-| 60-frame full run | 4.6s | 2.1s |
-| 300-frame full run | 9.9s | 10.4s |
+| Discovery + sampling (`--dry-run`) | 0.57s | 0.40s |
+| 60-frame full run | 2.54s | 2.04s |
+| 300-frame full run | 10.16s | 9.89s |
 
-Both use OpenCV for in-process video seeking and frame extraction. Go is faster for small runs because Python's startup (importing cv2, numpy, ultralytics) adds ~2–3s of fixed overhead. For large frame counts the two are roughly equal.
+Both use OpenCV for in-process video seeking and frame extraction and are within ~3% of each other at scale. Go is faster at small frame counts due to lower startup cost (no Python import overhead for cv2, numpy, ultralytics).
 
 ## About
 
