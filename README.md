@@ -2,19 +2,29 @@
 
 Create time-lapse videos from a collection of video clips.
 
-Takes a folder of video clips, detects which frames have a person present using YOLOv8, evenly samples across the full time range, and outputs an MP4 time-lapse. Works well with security cameras, trail cams, dashcams, or any source that produces many short clips over time.
+Takes a folder of video clips, evenly samples across the full time range, and outputs an MP4 time-lapse. The Python version also detects which frames have a person present using YOLOv8. Works well with security cameras, trail cams, dashcams, or any source that produces many short clips over time.
+
+Two implementations are available:
+
+| | Python | Go |
+|---|---|---|
+| Person detection | YOLOv8-nano (built-in) | Optional via `--detector` hook |
+| External deps | click, opencv, ultralytics, tqdm | None (stdlib only) |
+| Requires | Python 3.10+, ffmpeg | ffmpeg |
+| Binary | `timelapse` (via venv) | Single static binary |
 
 ## Requirements
 
-- Python 3.10+
-- [ffmpeg](https://ffmpeg.org/download.html) (`brew install ffmpeg` on macOS)
+- [ffmpeg](https://ffmpeg.org/download.html) (`brew install ffmpeg` on macOS, `winget install ffmpeg` on Windows)
 
 ## Installation
+
+### Python
 
 ```bash
 git clone <repo-url> && cd timeLapse
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
@@ -24,7 +34,25 @@ To make the command available globally:
 ln -s "$(pwd)/.venv/bin/timelapse" /usr/local/bin/timelapse
 ```
 
+### Go
+
+```bash
+cd timelapse-go
+make build          # produces ./timelapse
+```
+
+Or without make:
+
+```bash
+cd timelapse-go
+go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" -o timelapse .
+```
+
+Copy the binary anywhere on your PATH. No other files needed.
+
 ## Usage
+
+Both versions share the same interface (Python uses `--flag`, Go accepts both `-flag` and `--flag`):
 
 ```bash
 # Basic — 2 minute time-lapse from a folder of clips
@@ -45,14 +73,27 @@ timelapse --dry-run /path/to/clips
 # Skip person detection (include all sampled frames)
 timelapse --skip-detection /path/to/clips
 
-# Lower detection confidence for dark/IR footage
-timelapse --confidence 0.2 /path/to/clips
-
 # Higher resolution, more frames
 timelapse -d 10m --resolution 1920x1080 /path/to/clips
 
 # Only top-level folder (no subfolders)
 timelapse --no-recursive /path/to/clips
+```
+
+### Person detection (Python only, built-in)
+
+```bash
+# Lower detection confidence for dark/IR footage
+timelapse --confidence 0.2 /path/to/clips
+```
+
+### Person detection (Go, external hook)
+
+The Go version accepts any external command as a detector. The command receives a raw BGR24 frame on stdin and the frame dimensions as arguments; exit 0 means a person was detected.
+
+```bash
+# Use the bundled Python+YOLO detector script
+timelapse --detector "python3 detect.py" /path/to/clips
 ```
 
 ## Options
@@ -65,7 +106,6 @@ timelapse --no-recursive /path/to/clips
 | `--fps` | `30` | Output frame rate |
 | `--intro` | off | Linger on earliest footage (e.g. `15s`, `1m`) |
 | `--outro` | off | Linger on latest footage (e.g. `15s`, `1m`) |
-| `--confidence` | `0.3` | YOLO person detection threshold (0.0-1.0) |
 | `--resolution` | `1280x720` | Output resolution (`WxH`) |
 | `--timestamp` | off | Burn date overlay on frames |
 | `--skip-detection` | off | Include all frames without person detection |
@@ -74,15 +114,17 @@ timelapse --no-recursive /path/to/clips
 | `--workers` | `8` | Parallel workers for video probing |
 | `--dry-run` | off | Show stats without processing |
 | `-v, --verbose` | off | Debug logging |
+| `--confidence` | `0.3` | *(Python only)* YOLO detection threshold (0.0–1.0) |
+| `--detector` | off | *(Go only)* External detector command |
 
 ## How it works
 
 1. **Discovery** — Recursively finds video files and extracts timestamps from filenames, directory structure, video metadata, or file modification time
-2. **Sampling** — Divides the full time range into equal slots and picks the nearest video for each slot, extracting multiple frames from the same clip when needed to hit the target duration
-3. **Detection** — Runs YOLOv8-nano person detection on each extracted frame, filtering out frames with no people (skip with `--skip-detection`)
+2. **Sampling** — Divides the full time range into equal slots and picks the nearest video for each slot, with gap compression to prevent long idle periods from dominating. Extracts multiple frames from the same clip at different positions when needed
+3. **Detection** — Filters frames to those containing a person (Python: YOLOv8-nano built-in; Go: optional external command)
 4. **Composition** — Streams accepted frames directly to ffmpeg for H.264 encoding (constant memory usage)
 
-The `--intro` and `--outro` options create a "linger" effect where the beginning and end of the time-lapse play 3x slower than the middle, letting you savor the earliest and latest moments.
+The `--intro` and `--outro` options create a "linger" effect where the beginning and end of the time-lapse play 3× slower than the middle.
 
 ## About
 
