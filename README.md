@@ -9,13 +9,14 @@ Two implementations are available:
 | | Python | Go |
 |---|---|---|
 | Person detection | YOLOv8-nano (built-in) | Optional via `--detector` hook |
-| External deps | click, opencv, ultralytics, tqdm | None (stdlib only) |
-| Requires | Python 3.10+, ffmpeg | ffmpeg |
-| Binary | `timelapse` (via venv) | Single static binary |
+| External deps | click, opencv, ultralytics, tqdm | gocv (OpenCV bindings) |
+| Requires | Python 3.10+, ffmpeg | OpenCV 4, ffmpeg |
+| Binary | `timelapse` (via venv) | Single binary (links OpenCV) |
 
 ## Requirements
 
 - [ffmpeg](https://ffmpeg.org/download.html) (`brew install ffmpeg` on macOS, `winget install ffmpeg` on Windows)
+- **Go version only:** [OpenCV 4](https://opencv.org/) (`brew install opencv` on macOS)
 
 ## Installation
 
@@ -36,19 +37,24 @@ ln -s "$(pwd)/.venv/bin/timelapse" /usr/local/bin/timelapse
 
 ### Go
 
+Requires OpenCV 4 (`brew install opencv` on macOS).
+
 ```bash
 cd timelapse-go
 make build          # produces ./timelapse
 ```
 
-Or without make:
+Or without make (macOS):
 
 ```bash
 cd timelapse-go
+export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig"
+export CGO_CPPFLAGS=$(pkg-config --cflags opencv4)
+export CGO_LDFLAGS=$(pkg-config --libs opencv4)
 go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" -o timelapse .
 ```
 
-Copy the binary anywhere on your PATH. No other files needed.
+Copy the binary anywhere on your PATH. The machine running it also needs OpenCV installed.
 
 ## Usage
 
@@ -132,13 +138,11 @@ Measured on 60 synthetic 1280×720 clips with `--skip-detection` (no person dete
 
 | Stage | Python | Go |
 |---|---|---|
-| Discovery + sampling (`--dry-run`) | 0.24s | 0.52s |
-| 60-frame full run | 4.6s | 5.1s |
-| 300-frame full run | 9.9s | 20.4s |
+| Discovery + sampling (`--dry-run`) | 0.24s | 0.22s |
+| 60-frame full run | 4.6s | 2.1s |
+| 300-frame full run | 9.9s | 10.4s |
 
-**Python is ~2× faster at frame extraction** because OpenCV opens video files in-process and seeks natively. The Go version spawns one `ffmpeg` subprocess per frame (required to avoid external Go dependencies), which adds ~50–60ms overhead per frame.
-
-The Go version's advantage is distribution: a single ~7 MB binary with no Python, NumPy, or OpenCV required.
+Both use OpenCV for in-process video seeking and frame extraction. Go is faster for small runs because Python's startup (importing cv2, numpy, ultralytics) adds ~2–3s of fixed overhead. For large frame counts the two are roughly equal.
 
 ## About
 
