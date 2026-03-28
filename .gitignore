@@ -11,3 +11,10 @@ src/timelapse/_version.py
 # Go binaries
 timelapse-go/timelapse
 timelapse-go/timelapse.exe
+
+# macOS
+.DS_Store
+
+# Generated output / downloaded models
+*.mp4
+yolov8n.pt
