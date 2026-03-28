@@ -37,8 +37,36 @@ jobs:
         with:
           go-version: "1.21"
 
-      - name: Install OpenCV and ffmpeg
-        run: sudo apt-get install -y libopencv-dev ffmpeg
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential pkg-config ffmpeg \
+            libgtk2.0-dev libavcodec-dev libavformat-dev libswscale-dev \
+            libtbb-dev libjpeg-dev libpng-dev libtiff-dev
+
+      - name: Download Go modules
+        working-directory: timelapse-go
+        run: go mod download
+
+      - name: Cache OpenCV
+        id: opencv-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/lib/libopencv*
+            /usr/local/include/opencv4
+            /usr/local/lib/pkgconfig/opencv4.pc
+          key: opencv-4.10.0-ubuntu-22.04-v1
+
+      - name: Build OpenCV
+        if: steps.opencv-cache.outputs.cache-hit != 'true'
+        run: |
+          GOCV_DIR=$(go env GOPATH)/pkg/mod/gocv.io/x/gocv@v0.43.0
+          cd "$GOCV_DIR"
+          make install
+
+      - name: Update ldconfig
+        run: sudo ldconfig
 
       - name: Test
         working-directory: timelapse-go
