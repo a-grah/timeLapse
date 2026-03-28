@@ -126,6 +126,20 @@ timelapse --detector "python3 detect.py" /path/to/clips
 
 The `--intro` and `--outro` options create a "linger" effect where the beginning and end of the time-lapse play 3× slower than the middle.
 
+## Benchmarks
+
+Measured on 60 synthetic 1280×720 clips with `--skip-detection` (no person detection), macOS arm64.
+
+| Stage | Python | Go |
+|---|---|---|
+| Discovery + sampling (`--dry-run`) | 0.24s | 0.52s |
+| 60-frame full run | 4.6s | 5.1s |
+| 300-frame full run | 9.9s | 20.4s |
+
+**Python is ~2× faster at frame extraction** because OpenCV opens video files in-process and seeks natively. The Go version spawns one `ffmpeg` subprocess per frame (required to avoid external Go dependencies), which adds ~50–60ms overhead per frame.
+
+The Go version's advantage is distribution: a single ~7 MB binary with no Python, NumPy, or OpenCV required.
+
 ## About
 
 This project was vibe coded with [Claude Code](https://claude.ai/code) for my personal use. If anyone else finds it useful, I'd be thrilled!
