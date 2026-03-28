@@ -98,8 +98,8 @@ timelapse --confidence 0.2 /path/to/clips
 The Go version accepts any external command as a detector. The command receives a raw BGR24 frame on stdin and the frame dimensions as arguments; exit 0 means a person was detected.
 
 ```bash
-# Use the bundled Python+YOLO detector script
-timelapse --detector "python3 detect.py" /path/to/clips
+# Example: use a Python+YOLO script as the detector
+timelapse --detector "python3 /path/to/my_detector.py" /path/to/clips
 ```
 
 ## Options
