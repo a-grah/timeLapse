@@ -6,6 +6,7 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   python:
@@ -27,8 +28,8 @@ jobs:
       - name: Test
         run: python -m pytest tests/ -v
 
-  go:
-    name: Go
+  go-linux:
+    name: Go (linux/amd64)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -75,10 +76,50 @@ jobs:
         working-directory: timelapse-go
         run: |
           VERSION=$(git describe --tags --always --dirty)
-          go build -ldflags "-X main.version=${VERSION}" -o timelapse .
+          go build -ldflags "-X main.version=${VERSION}" -o timelapse-linux-amd64 .
 
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
         with:
-          name: timelapse-linux-amd64
-          path: timelapse-go/timelapse
+          files: timelapse-go/timelapse-linux-amd64
+
+  go-macos:
+    name: Go (macos/arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache-dependency-path: timelapse-go/go.sum
+
+      - name: Install OpenCV and ffmpeg
+        run: brew install opencv ffmpeg
+
+      - name: Test
+        working-directory: timelapse-go
+        env:
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig
+          CGO_CPPFLAGS: ${{ '' }}
+          CGO_LDFLAGS: ${{ '' }}
+        run: |
+          export CGO_CPPFLAGS=$(pkg-config --cflags opencv4)
+          export CGO_LDFLAGS=$(pkg-config --libs opencv4)
+          go test ./...
+
+      - name: Build
+        working-directory: timelapse-go
+        run: |
+          export PKG_CONFIG_PATH=/opt/homebrew/lib/pkgconfig
+          export CGO_CPPFLAGS=$(pkg-config --cflags opencv4)
+          export CGO_LDFLAGS=$(pkg-config --libs opencv4)
+          VERSION=$(git describe --tags --always --dirty)
+          go build -ldflags "-X main.version=${VERSION}" -o timelapse-macos-arm64 .
+
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: timelapse-go/timelapse-macos-arm64
